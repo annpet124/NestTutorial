@@ -84,14 +84,17 @@ def calculate_RBN_weights(params):
 
     N_E = params.get("N_E")  # excitatory units
     N_I = params.get("N_I")  # inhibitory units
-    N = N_E + N_I  # total units
+    N_T = params.get("N_T", 0)  # thalamic units
+    N = N_E + N_I + N_T  # total units
 
     E_L = params.get("E_L")
     V_th_E = params.get("V_th_E")  # threshold voltage
     V_th_I = params.get("V_th_I")
+    V_th_T = params.get("V_th_T", V_th_E)  # default to V_th_E if not provided
 
     tau_E = params.get("tau_E")
     tau_I = params.get("tau_I")
+    tau_T = params.get("tau_T", tau_E)  # default to tau_E if not provided
 
     tau_syn_ex = params.get("tau_syn_ex")
     tau_syn_in = params.get("tau_syn_in")
@@ -104,16 +107,23 @@ def calculate_RBN_weights(params):
     amp_EI = postsynaptic_current_to_potential(tau_E, tau_syn_in)
     amp_IE = postsynaptic_current_to_potential(tau_I, tau_syn_ex)
     amp_II = postsynaptic_current_to_potential(tau_I, tau_syn_in)
+    amp_TE = postsynaptic_current_to_potential(tau_T, tau_syn_ex)
+    amp_TI = postsynaptic_current_to_potential(tau_T, tau_syn_in)
 
     baseline_conn_prob = params.get("baseline_conn_prob")  # connection probs
 
-    js = np.zeros((2, 2))
+    js = np.zeros((3, 3))
     K_EE = N_E * baseline_conn_prob[0, 0]
     js[0, 0] = (V_th_E - E_L) * (K_EE**-0.5) * N**0.5 / amp_EE
     js[0, 1] = -gei * js[0, 0] * baseline_conn_prob[0, 0] * N_E * amp_EE / (baseline_conn_prob[0, 1] * N_I * amp_EI)
     K_IE = N_E * baseline_conn_prob[1, 0]
     js[1, 0] = gie * (V_th_I - E_L) * (K_IE**-0.5) * N**0.5 / amp_IE
     js[1, 1] = -gii * js[1, 0] * baseline_conn_prob[1, 0] * N_E * amp_IE / (baseline_conn_prob[1, 1] * N_I * amp_II)
+    if N_T > 0:
+        K_TE = N_E * baseline_conn_prob[2, 0]
+        js[2, 0] = (V_th_T - E_L) * (K_TE**-0.5) * N**0.5 / amp_TE
+        js[2, 1] = (V_th_T - E_L) * (K_TE**-0.5) * N**0.5 / amp_TI
+        # Additional weights for thalamic connections can be added here if needed
     return js
 
 
