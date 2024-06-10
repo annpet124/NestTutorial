@@ -1,12 +1,75 @@
+# -*- coding: utf-8 -*-
+#
+# network.py
+#
+# This file is part of NEST.
+#
+# Copyright (C) 2004 The NEST Initiative
+#
+# NEST is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 2 of the License, or
+# (at your option) any later version.
+#
+# NEST is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with NEST.  If not, see <http://www.gnu.org/licenses/>.
+
+"""PyNEST EI-clustered network: Network Class
+---------------------------------------------
+
+``ClusteredNetwork`` class with functions to build and simulate
+the EI-clustered network.
+"""
+
+import pickle
+
+import helper
 import nest
 import numpy as np
-import matplotlib.pyplot as plt
-import random
-import pickle
-from helper import calculate_RBN_weights, rheobase_current, raster_plot
+
 
 class ClusteredNetwork:
+    """EI-clustered network objeect to build and simulate the network.
+
+    Provides functions to create neuron populations,
+    stimulation devices and recording devices for an
+    EI-clustered network and setups the simulation in
+    NEST (v3.x).
+
+    Attributes
+    ----------
+    _params: dict
+        Dictionary with parameters used to construct network.
+    _populations: list
+        List of neuron population groups.
+    _recording_devices: list
+        List of recording devices.
+    _currentsources: list
+        List of current sources.
+    _model_build_pipeline: list
+        List of functions to build the network.
+    """
+
     def __init__(self, sim_dict, net_dict, stim_dict):
+        """Initialize the ClusteredNetwork object.
+
+        Parameters are given and explained in the files network_params.py,
+        sim_params.py and stimulus_params.py.
+
+        Parameters
+        ----------
+        sim_dict: dict
+            Dictionary with simulation parameters.
+        net_dict: dict
+            Dictionary with network parameters.
+        stim_dict: dict
+            Dictionary with stimulus parameters.
+        """
 
         # merge dictionaries of simulation, network and stimulus parameters
         self._params = {**sim_dict, **net_dict, **stim_dict}
@@ -105,435 +168,799 @@ class ClusteredNetwork:
             else I_xI * nest.random.uniform(1 - self._params["delta_I_xE"] / 2, 1 + self._params["delta_I_xE"] / 2),
             "tau_syn_ex": self._params["tau_syn_ex"],
             "tau_syn_in": self._params["tau_syn_in"],
+            "V_m": self._params["V_m"]
+            if not self._params["V_m"] == "rand"
+            else self._params["V_th_I"] - 20 * nest.random.lognormal(0, 1),
         }
 
+        # iaf_psc_exp allows stochasticity, if not used - don't supply the parameters and use
+        # iaf_psc_exp as deterministic model
+        if (self._params.get("delta") is not None) and (self._params.get("rho") is not None):
+            E_neuron_params["delta"] = self._params["delta"]
+            I_neuron_params["delta"] = self._params["delta"]
+            E_neuron_params["rho"] = self._params["rho"]
+            I_neuron_params["rho"] = self._params["rho"]
 
-        def plot_cluster_network(self):
-            """Plot the network clusters."""
-            # Create figure and axis
-            fig, ax = plt.subplots(figsize=(10, 6))
+        # create the neuron populations
+        pop_size_E = self._params["N_E"] // self._params["n_clusters"]
+        pop_size_I = self._params["N_I"] // self._params["n_clusters"]
+        E_pops = [
+            nest.Create(self._params["neuron_type"], n=pop_size_E, params=E_neuron_params)
+            for _ in range(self._params["n_clusters"])
+        ]
+        I_pops = [
+            nest.Create(self._params["neuron_type"], n=pop_size_I, params=I_neuron_params)
+            for _ in range(self._params["n_clusters"])
+        ]
 
-            # Extract parameters
-            n_clusters = self._params["n_clusters"]
-            baseline_conn_prob = self._params["baseline_conn_prob"]
+        self._populations = [E_pops, I_pops]
 
-            # Compute cluster sizes
-            cluster_sizes = np.zeros(n_clusters)
-            for i in range(n_clusters):
-                cluster_sizes[i] = int(self._params["N_E"] / n_clusters)
+        # Add thalamic population
+        self.add_thalamic_input()
 
-                # Plot connections between clusters
-                for i in range(n_clusters):
-                    for j in range(n_clusters):
-                        conn_prob = baseline_conn_prob[0, 0] if i == j else baseline_conn_prob[0, 1]
-                        if conn_prob > 0:
-                            ax.plot([i, j], [cluster_sizes[i], cluster_sizes[j]], 'k-', linewidth=conn_prob * 10)
+    def add_thalamic_input(self):
+        """Add thalamic input to the network.
 
-                # Set axis labels and title
-                ax.set_xlabel('Cluster ID')
-                ax.set_ylabel('Number of Neurons')
-                ax.set_title('Network Clusters')
+        Creates the third population and connects it to the
+        excitatory and inhibitory populations.
+        """
+        # Create parameters for the thalamic population
+        thalamic_neuron_params = {
+            "neuron_type": "iaf_psc_exp",
+            "E_L": 0.0,
+            "C_m": 1.0,
+            "tau_E": 20.0,
+            "tau_I": 10.0,
+            "t_ref": 5.0,
+            "V_th_E": 20.0,
+            "V_th_I": 20.0,
+            "V_r": 0.0,
+            "tau_syn_ex": 5.0,
+            "tau_syn_in": 5.0,
+            "delay": 0.1,
+            "I_th_E": 1.25,
+            "I_th_I": 0.78,
+            "delta_I_xE": 0.0,
+            "delta_I_xI": 0.0,
+            "V_m": "rand",
+        }
 
-                # Show plot
-                plt.show()
+        # Calculate size of the thalamic population
+        thalamic_pop_size = 500  # Adjust population size
 
-        class EIClusteredNetworkSimulation:
-            def __init__(self, params):
-                self._params = params
-                self._populations = [[], []]
-                self._currentsources = None
-                self._recording_devices = None
-                self._model_build_pipeline = []
+        # Create the thalamic population
+        thalamic_pop = nest.Create(self._params["neuron_type"], n=thalamic_pop_size, params=thalamic_neuron_params)
 
-            def create_populations(self):
-                """Create the populations of excitatory and inhibitory neurons."""
-                N_E = self._params["N_E"]
-                N_I = self._params["N_I"]
-                n_clusters = self._params["n_clusters"]
-                neuron_params = {
-                    "C_m": self._params["C_m"],
-                    "tau_m": [self._params["tau_E"], self._params["tau_I"]],
-                    "t_ref": self._params["t_ref"],
-                    "V_th": [self._params["V_th_E"], self._params["V_th_I"]],
-                    "V_reset": self._params["V_r"],
-                    "tau_syn_ex": self._params["tau_syn_ex"],
-                    "tau_syn_in": self._params["tau_syn_in"],
-                    "E_L": self._params["E_L"],
-                }
-                for i, population in enumerate(self._populations):
-                    for _ in range(n_clusters):
-                        population.append(nest.Create(self._params["neuron_type"], N_E / n_clusters, neuron_params))
+        # Append thalamic population to list of populations
+        self._populations.append(thalamic_pop)
 
-            def connect_synapses(self):
-                """Connect synapses between neuron populations."""
-                # Calculate synaptic weights
-                js = calculate_RBN_weights(self._params)
+    def connect(self):
+            """Connect the excitatory, inhibitory, and thalamic populations
+            in the EI-clustered scheme
 
-                # Inhibitory to inhibitory neuron connections
-                j_ii = js[1, 1] / np.sqrt(N)
-                nest.CopyModel("static_synapse", "II", {"weight": j_ii, "delay": self._params["delay"]})
+            Raises
+            ------
+            ValueError
+                If the clustering method is not recognized
+            """
 
-                if self._params["fixed_indegree"]:
-                    K_II_plus = int(p_plus[1, 1] * self._params["N_I"] / self._params["n_clusters"])
-                    K_II_minus = int(p_minus[1, 1] * self._params["N_I"] / self._params["n_clusters"])
-                    conn_params_II_plus = {
-                        "rule": "fixed_indegree",
-                        "indegree": K_II_plus,
-                        "allow_autapses": False,
-                        "allow_multapses": True,
-                    }
-                    conn_params_II_minus = {
-                        "rule": "fixed_indegree",
-                        "indegree": K_II_minus,
-                        "allow_autapses": False,
-                        "allow_multapses": True,
-                    }
+            if "clustering" not in self._params or self._params["clustering"] == "weight":
+                self.connect_weight()
+            elif self._params["clustering"] == "probabilities":
+                self.connect_probabilities()
+            else:
+                raise ValueError("Clustering method %s not implemented" % self._params["clustering"])
 
+            # Connect thalamic population to excitatory population
+            conn_params_thalamic_to_excitatory = {
+                "rule": "fixed_indegree",
+                "indegree": 800,  # Adjust desired connectivity
+                "weight": 0.2,  # Adjust desired connectivity
+                "delay": 0.1,
+            }
+            for pre in self._populations[2]:
+                for post in self._populations[0]:
+                    nest.Connect(pre, post, conn_params_thalamic_to_excitatory)
+
+            # Connect thalamic population to inhibitory population
+            conn_params_thalamic_to_inhibitory = {
+                "rule": "fixed_indegree",
+                "indegree": 200,  # Adjust desired connectivity
+                "weight": 0.5,  # Adjust desired connectivity
+                "delay": 0.1,
+            }
+            for pre in self._populations[2]:
+                for post in self._populations[1]:
+                    nest.Connect(pre, post, conn_params_thalamic_to_inhibitory)
+
+    def connect_probabilities(self):
+        """Connect the clusters with a probability EI-cluster scheme
+
+        Connects the excitatory and inhibitory populations with each other
+        in the EI-clustered scheme by increasing the probabilities of the
+        connections within the clusters and decreasing the probabilities of the
+        connections between the clusters. The weights are calculated so that
+        the total input to a neuron is balanced.
+        """
+
+        #  self._populations[0] -> Excitatory population
+        #  self._populations[1] -> Inhibitory population
+
+        N = self._params["N_E"] + self._params["N_I"]  # total units
+        # if js are not given compute them so that sqrt(K) spikes equal v_thr-E_L and rows are balanced
+        # if any of the js is nan or not given
+        if self._params.get("js") is None or np.isnan(self._params.get("js")).any():
+            js = helper.calculate_RBN_weights(self._params)
+        js *= self._params["s"]
+
+        if self._params["n_clusters"] > 1:
+            pminus = (self._params["n_clusters"] - self._params["pplus"]) / float(self._params["n_clusters"] - 1)
+        else:
+            self._params["pplus"] = np.ones((2, 2))
+            pminus = np.ones((2, 2))
+
+        p_plus = self._params["pplus"] * self._params["baseline_conn_prob"]
+        p_minus = pminus * self._params["baseline_conn_prob"]
+
+        # Connection probabilities within clusters can exceed 1. In this case, we iteratively split
+        # the connections in multiple synapse populations with probabilities < 1.
+        iterations = np.ones((2, 2), dtype=int)
+        # test if any of the probabilities is larger than 1
+        if np.any(p_plus > 1):
+            print("The probability of some connections is larger than 1.")
+            print("Pre-splitting the connections in multiple synapse populations:")
+            printoptions = np.get_printoptions()
+            np.set_printoptions(precision=2, floatmode="fixed")
+            print("p_plus:\n", p_plus)
+            print("p_minus:\n", p_minus)
+            for i in range(2):
+                for j in range(2):
+                    if p_plus[i, j] > 1:
+                        iterations[i, j] = int(np.ceil(p_plus[i, j]))
+                        p_plus[i, j] /= iterations[i, j]
+            print("\nPost-splitting the connections in multiple synapse populations:")
+            print("p_plus:\n", p_plus)
+            print("Number of synapse populations:\n", iterations)
+            np.set_printoptions(**printoptions)
+
+        # define the synapses and connect the populations
+
+        # Excitatory to excitatory neuron connections
+        j_ee = js[0, 0] / np.sqrt(N)
+        nest.CopyModel("static_synapse", "EE", {"weight": j_ee, "delay": self._params["delay"]})
+
+        if self._params["fixed_indegree"]:
+            K_EE_plus = int(p_plus[0, 0] * self._params["N_E"] / self._params["n_clusters"])
+            print("K_EE+: ", K_EE_plus)
+            K_EE_minus = int(p_minus[0, 0] * self._params["N_E"] / self._params["n_clusters"])
+            print("K_EE-: ", K_EE_minus)
+            conn_params_EE_plus = {
+                "rule": "fixed_indegree",
+                "indegree": K_EE_plus,
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+            conn_params_EE_minus = {
+                "rule": "fixed_indegree",
+                "indegree": K_EE_minus,
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+
+        else:
+            conn_params_EE_plus = {
+                "rule": "pairwise_bernoulli",
+                "p": p_plus[0, 0],
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+            conn_params_EE_minus = {
+                "rule": "pairwise_bernoulli",
+                "p": p_minus[0, 0],
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+        for i, pre in enumerate(self._populations[0]):
+            for j, post in enumerate(self._populations[0]):
+                if i == j:
+                    # same cluster
+                    for n in range(iterations[0, 0]):
+                        nest.Connect(pre, post, conn_params_EE_plus, "EE")
                 else:
-                    conn_params_II_plus = {
-                        "rule": "pairwise_bernoulli",
-                        "p": p_plus[1, 1],
-                        "allow_autapses": False,
-                        "allow_multapses": True,
-                    }
-                    conn_params_II_minus = {
-                        "rule": "pairwise_bernoulli",
-                        "p": p_minus[1, 1],
-                        "allow_autapses": False,
-                        "allow_multapses": True,
-                    }
-                for i, pre in enumerate(self._populations[1]):
-                    for j, post in enumerate(self._populations[1]):
-                        if i == j:
-                            # same cluster
-                            for n in range(iterations[1, 1]):
-                                nest.Connect(pre, post, conn_params_II_plus, "II")
-                        else:
-                            nest.Connect(pre, post, conn_params_II_minus, "II")
+                    nest.Connect(pre, post, conn_params_EE_minus, "EE")
 
-            # Other methods remain unchanged
+        # Inhibitory to excitatory neuron connections
+        j_ei = js[0, 1] / np.sqrt(N)
+        nest.CopyModel("static_synapse", "EI", {"weight": j_ei, "delay": self._params["delay"]})
 
-            def connect_prob(self):
-                """Connect the clusters with a probability EI-cluster scheme."""
-                N = self._params["N_E"] + self._params["N_I"]
+        if self._params["fixed_indegree"]:
+            K_EI_plus = int(p_plus[0, 1] * self._params["N_I"] / self._params["n_clusters"])
+            print("K_EI+: ", K_EI_plus)
+            K_EI_minus = int(p_minus[0, 1] * self._params["N_I"] / self._params["n_clusters"])
+            print("K_EI-: ", K_EI_minus)
+            conn_params_EI_plus = {
+                "rule": "fixed_indegree",
+                "indegree": K_EI_plus,
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+            conn_params_EI_minus = {
+                "rule": "fixed_indegree",
+                "indegree": K_EI_minus,
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
 
-                if self._params["n_clusters"] > 1:
-                    p = np.ones([N, N]) * self._params["pminus"]
-                    size_E = self._params["N_E"] // self._params["n_clusters"]
-                    size_I = self._params["N_I"] // self._params["n_clusters"]
-                    for i in range(self._params["n_clusters"]):
-                        for j in range(self._params["n_clusters"]):
-                            if i == j:
-                                p[size_E * i: size_E * (i + 1), size_E * j: size_E * (j + 1)] = self._params["pplus"][
-                                    0, 0]
-                                p[size_E * i: size_E * (i + 1),
-                                self._params["N_E"] + size_I * j: self._params["N_E"] + size_I * (j + 1)] = \
-                                self._params["pplus"][0, 1]
-                                p[self._params["N_E"] + size_I * i: self._params["N_E"] + size_I * (i + 1),
-                                size_E * j: size_E * (j + 1)] = self._params["pplus"][1, 0]
-                                p[self._params["N_E"] + size_I * i: self._params["N_E"] + size_I * (i + 1),
-                                self._params["N_E"] + size_I * j: self._params["N_E"] + size_I * (j + 1)] = \
-                                self._params["pplus"][1, 1]
+        else:
+            conn_params_EI_plus = {
+                "rule": "pairwise_bernoulli",
+                "p": p_plus[0, 1],
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+            conn_params_EI_minus = {
+                "rule": "pairwise_bernoulli",
+                "p": p_minus[0, 1],
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+        for i, pre in enumerate(self._populations[1]):
+            for j, post in enumerate(self._populations[0]):
+                if i == j:
+                    # same cluster
+                    for n in range(iterations[0, 1]):
+                        nest.Connect(pre, post, conn_params_EI_plus, "EI")
                 else:
-                    p = np.ones([N, N]) * self._params["pplus"]
+                    nest.Connect(pre, post, conn_params_EI_minus, "EI")
 
-                p *= self._params["p_scale"]
+        # Excitatory to inhibitory neuron connections
+        j_ie = js[1, 0] / np.sqrt(N)
+        nest.CopyModel("static_synapse", "IE", {"weight": j_ie, "delay": self._params["delay"]})
 
-                E_neurons = [neuron for population in self._populations[0] for neuron in population]
-                I_neurons = [neuron for population in self._populations[1] for neuron in population]
-                neurons = E_neurons + I_neurons
+        if self._params["fixed_indegree"]:
+            K_IE_plus = int(p_plus[1, 0] * self._params["N_E"] / self._params["n_clusters"])
+            print("K_IE+: ", K_IE_plus)
+            K_IE_minus = int(p_minus[1, 0] * self._params["N_E"] / self._params["n_clusters"])
+            print("K_IE-: ", K_IE_minus)
+            conn_params_IE_plus = {
+                "rule": "fixed_indegree",
+                "indegree": K_IE_plus,
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+            conn_params_IE_minus = {
+                "rule": "fixed_indegree",
+                "indegree": K_IE_minus,
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
 
-                for i, neuron in enumerate(neurons):
-                    conn_probs = p[i, :]
-                    conn_probs[conn_probs > 1] = 1  # Ensure probabilities are between 0 and 1
-
-                    post_neurons = np.random.choice(neurons, size=(conn_probs > 0).sum(), replace=False, p=conn_probs)
-                    weights = self.calculate_RBN_weights()[
-                        i, np.array([neurons.index(post_neuron) for post_neuron in post_neurons])]
-                    delays = nest.random.uniform(min=self._params["delay_range"][0], max=self._params["delay_range"][1])
-                    nest.Connect([neuron], list(post_neurons), syn_spec={"weight": weights, "delay": delays})
-
-            def connect_weight(self):
-                """Connect the clusters with a weight EI-cluster scheme."""
-                N = self._params["N_E"] + self._params["N_I"]
-
-                js = self.calculate_RBN_weights()
-
-                if self._params["n_clusters"] > 1:
-                    j = np.ones([N, N]) * self._params["jminus"]
-                    size_E = self._params["N_E"] // self._params["n_clusters"]
-                    size_I = self._params["N_I"] // self._params["n_clusters"]
-                    for i in range(self._params["n_clusters"]):
-                        for j in range(self._params["n_clusters"]):
-                            if i == j:
-                                j[size_E * i: size_E * (i + 1), size_E * j: size_E * (j + 1)] = self._params["jplus"][
-                                    0, 0]
-                                j[size_E * i: size_E * (i + 1),
-                                self._params["N_E"] + size_I * j: self._params["N_E"] + size_I * (j + 1)] = \
-                                self._params["jplus"][0, 1]
-                                j[self._params["N_E"] + size_I * i: self._params["N_E"] + size_I * (i + 1),
-                                size_E * j: size_E * (j + 1)] = self._params["jplus"][1, 0]
-                                j[self._params["N_E"] + size_I * i: self._params["N_E"] + size_I * (i + 1),
-                                self._params["N_E"] + size_I * j: self._params["N_E"] + size_I * (j + 1)] = \
-                                self._params["jplus"][1, 1]
+        else:
+            conn_params_IE_plus = {
+                "rule": "pairwise_bernoulli",
+                "p": p_plus[1, 0],
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+            conn_params_IE_minus = {
+                "rule": "pairwise_bernoulli",
+                "p": p_minus[1, 0],
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+        for i, pre in enumerate(self._populations[0]):
+            for j, post in enumerate(self._populations[1]):
+                if i == j:
+                    # same cluster
+                    for n in range(iterations[1, 0]):
+                        nest.Connect(pre, post, conn_params_IE_plus, "IE")
                 else:
-                    j = np.ones([N, N]) * self._params["jplus"]
+                    nest.Connect(pre, post, conn_params_IE_minus, "IE")
 
-                j *= self._params["j_scale"]
+        # Inhibitory to inhibitory neuron connections
+        j_ii = js[1, 1] / np.sqrt(N)
+        nest.CopyModel("static_synapse", "II", {"weight": j_ii, "delay": self._params["delay"]})
 
-                E_neurons = [neuron for population in self._populations[0] for neuron in population]
-                I_neurons = [neuron for population in self._populations[1] for neuron in population]
-                neurons = E_neurons + I_neurons
+        if self._params["fixed_indegree"]:
+            K_II_plus = int(p_plus[1, 1] * self._params["N_I"] / self._params["n_clusters"])
+            print("K_II+: ", K_II_plus)
+            K_II_minus = int(p_minus[1, 1] * self._params["N_I"] / self._params["n_clusters"])
+            print("K_II-: ", K_II_minus)
+            conn_params_II_plus = {
+                "rule": "fixed_indegree",
+                "indegree": K_II_plus,
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+            conn_params_II_minus = {
+                "rule": "fixed_indegree",
+                "indegree": K_II_minus,
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
 
-                for i, neuron in enumerate(neurons):
-                    conn_probs = self.calculate_RBN_weights()[i, :]
-                    conn_probs[conn_probs > 1] = 1  # Ensure probabilities are between 0 and 1
+        else:
+            conn_params_II_plus = {
+                "rule": "pairwise_bernoulli",
+                "p": p_plus[1, 1],
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+            conn_params_II_minus = {
+                "rule": "pairwise_bernoulli",
+                "p": p_minus[1, 1],
+                "allow_autapses": False,
+                "allow_multapses": True,
+            }
+        for i, pre in enumerate(self._populations[1]):
+            for j, post in enumerate(self._populations[1]):
+                if i == j:
+                    # same cluster
+                    for n in range(iterations[1, 1]):
+                        nest.Connect(pre, post, conn_params_II_plus, "II")
+                else:
+                    nest.Connect(pre, post, conn_params_II_minus, "II")
 
-                    post_neurons = np.random.choice(neurons, size=(conn_probs > 0).sum(), replace=False, p=conn_probs)
-                    weights = j[i, np.array([neurons.index(post_neuron) for post_neuron in post_neurons])]
-                    delays = nest.random.uniform(min=self._params["delay_range"][0], max=self._params["delay_range"][1])
-                    nest.Connect([neuron], list(post_neurons), syn_spec={"weight": weights, "delay": delays})
+        # Thalamic population to excitatory population
+        conn_params_thalamic_to_excitatory = {
+            "rule": "fixed_indegree",
+            "indegree": 800,  # Adjust desired connectivity
+            "weight": 0.2,  # Adjust desired connectivity
+            "delay": 0.1,
+        }
 
-            def rheobase_current(self, tau, E_L, V_th, C_m):
-                """Compute the rheobase current based on LIF parameters."""
-                return (V_th - E_L) / tau * C_m
+        for pre in self._populations[2]:
+            for post in self._populations[0]:
+                nest.Connect(pre, post, conn_params_thalamic_to_excitatory)
 
-            def calculate_RBN_weights(self):
-                """Calculate random balanced network weights."""
-                N = self._params["N_E"] + self._params["N_I"]
-                K = self._params["K"]
-                tau = np.array([self._params["tau_E"], self._params["tau_I"]])
-                C_m = self._params["C_m"]
-                V_th = np.array([self._params["V_th_E"], self._params["V_th_I"]])
-                E_L = self._params["E_L"]
+        # Thalamic population to inhibitory population
+        conn_params_thalamic_to_inhibitory = {
+        "rule": "fixed_indegree",
+        "indegree": 200,  # Adjust desired connectivity
+        "weight": 0.5,  # Adjust desired connectivity
+        "delay": 0.1,
+        }
 
-                js = np.zeros((N, N))
-                for i in range(N):
-                    if i < self._params["N_E"]:
-                        for j in range(N):
-                            if j < self._params["N_E"]:
-                                js[i, j] = self.rheobase_current(tau[0], E_L, V_th[0], C_m) / np.sqrt(K)
-                            else:
-                                js[i, j] = self.rheobase_current(tau[0], E_L, V_th[0], C_m) / np.sqrt(K) * self._params[
-                                    "rj"]
-                    else:
-                        for j in range(N):
-                            if j < self._params["N_E"]:
-                                js[i, j] = self.rheobase_current(tau[1], E_L, V_th[1], C_m) / np.sqrt(K) * self._params[
-                                    "rj"]
-                            else:
-                                js[i, j] = self.rheobase_current(tau[1], E_L, V_th[1], C_m) / np.sqrt(K) * self._params[
-                                    "rj"] ** 2
+        for pre in self._populations[2]:
+            for post in self._populations[1]:
+                nest.Connect(pre, post, conn_params_thalamic_to_inhibitory)
 
-                return js
+            # Connect thalamic population to itself
+        conn_params_thalamic_self = {
+            "rule": "fixed_indegree",
+            "indegree": 500,  # Adjust desired connectivity
+            "weight": 0.4,  # Adjust desired connectivity
+            "delay": 0.1,
+        }
+        for pre in self._populations[2]:
+            for post in self._populations[2]:
+                nest.Connect(pre, post, conn_params_thalamic_self)
 
-            def create_stimulation(self):
-                """Create a current source and connect it to clusters."""
-                if self._params["stim_clusters"] is not None:
-                    stim_amp = self._params["stim_amp"]  # amplitude of the stimulation current in pA
-                    stim_starts = self._params["stim_starts"]  # list of stimulation start times
-                    stim_ends = self._params["stim_ends"]  # list of stimulation end times
-                    amplitude_values = []
-                    amplitude_times = []
-                    for start, end in zip(stim_starts, stim_ends):
-                        amplitude_times.append(start + self._params["warmup"])
-                        amplitude_values.append(stim_amp)
-                        amplitude_times.append(end + self._params["warmup"])
-                        amplitude_values.append(0.0)
-                    self._currentsources = [nest.Create("step_current_generator")]
-                    for stim_cluster in self._params["stim_clusters"]:
-                        nest.Connect(self._currentsources[0], self._populations[0][stim_cluster])
-                    nest.SetStatus(
-                        self._currentsources[0],
-                        {
-                            "amplitude_times": amplitude_times,
-                            "amplitude_values": amplitude_values,
-                        },
-                    )
+    def connect_weight(self):
+        """Connect the clusters with a weight EI-cluster scheme
 
-            def create_recording_devices(self):
-                """Create recording devices based on simulation parameters."""
-                self._recording_devices = [nest.Create("spike_recorder")]
-                self._recording_devices[0].record_to = "memory"
+        Connects the excitatory and inhibitory populations with
+        each other in the EI-clustered scheme by increasing the weights
+        of the connections within the clusters and decreasing the weights
+        of the connections between the clusters. The weights are calculated
+        so that the total input to a neuron is balanced.
+        """
 
-                all_units = self._populations[0][0]
-                for E_pop in self._populations[0][1:]:
-                    all_units += E_pop
-                for I_pop in self._populations[1]:
-                    all_units += I_pop
-                nest.Connect(all_units, self._recording_devices[0], "all_to_all")  # Spikerecorder
+        #  self._populations[0] -> Excitatory population
+        #  self._populations[1] -> Inhibitory population
 
-            def set_model_build_pipeline(self, pipeline):
-                """Set _model_build_pipeline
+        N = self._params["N_E"] + self._params["N_I"]  # total units
 
-                Parameters
-                ----------
-                pipeline: list
-                    ordered list of functions executed to build the network model
-                """
-                self._model_build_pipeline = pipeline
+        # if js are not given compute them so that sqrt(K) spikes equal v_thr-E_L and rows are balanced
+        # if any of the js is nan or not given
+        if self._params.get("js") is None or np.isnan(self._params.get("js")).any():
+            js = helper.calculate_RBN_weights(self._params)
+        js *= self._params["s"]
 
-            def setup_network(self):
-                """Setup network in NEST
+        # jminus is calculated so that row sums remain constant
+        if self._params["n_clusters"] > 1:
+            jminus = (self._params["n_clusters"] - self._params["jplus"]) / float(self._params["n_clusters"] - 1)
+        else:
+            self._params["jplus"] = np.ones((2, 2))
+            jminus = np.ones((2, 2))
 
-                Initializes NEST and creates
-                the network in NEST, ready to be simulated.
-                Functions saved in _model_build_pipeline are executed.
-                """
-                for func in self._model_build_pipeline:
-                    func()
+        # define the synapses and connect the populations
 
-            def simulate(self):
-                """Simulates network for a period of warmup+simtime"""
-                nest.Simulate(self._params["warmup"] + self._params["simtime"])
+        # Excitatory to excitatory neuron connections
+        j_ee = js[0, 0] / np.sqrt(N)
+        nest.CopyModel(
+            "static_synapse",
+            "EE_plus",
+            {
+                "weight": self._params["jplus"][0, 0] * j_ee,
+                "delay": self._params["delay"],
+            },
+        )
+        nest.CopyModel(
+            "static_synapse",
+            "EE_minus",
+            {"weight": jminus[0, 0] * j_ee, "delay": self._params["delay"]},
+        )
+        if self._params["fixed_indegree"]:
+            K_EE = int(self._params["baseline_conn_prob"][0, 0] * self._params["N_E"] / self._params["n_clusters"])
+            print("K_EE: ", K_EE)
+            conn_params_EE = {
+                "rule": "fixed_indegree",
+                "indegree": K_EE,
+                "allow_autapses": False,
+                "allow_multapses": False,
+            }
 
-            def get_recordings(self):
-                """Extract spikes from Spikerecorder
+        else:
+            conn_params_EE = {
+                "rule": "pairwise_bernoulli",
+                "p": self._params["baseline_conn_prob"][0, 0],
+                "allow_autapses": False,
+                "allow_multapses": False,
+            }
+        for i, pre in enumerate(self._populations[0]):
+            for j, post in enumerate(self._populations[0]):
+                if i == j:
+                    # same cluster
+                    nest.Connect(pre, post, conn_params_EE, "EE_plus")
+                else:
+                    nest.Connect(pre, post, conn_params_EE, "EE_minus")
 
-                Extract spikes form the Spikerecorder connected
-                to all populations created in create_populations.
-                Cuts the warmup period away and sets time relative to end of warmup.
-                Ids 1:N_E correspond to excitatory neurons,
-                N_E+1:N_E+N_I correspond to inhibitory neurons.
+        # Inhibitory to excitatory neuron connections
+        j_ei = js[0, 1] / np.sqrt(N)
+        nest.CopyModel(
+            "static_synapse",
+            "EI_plus",
+            {
+                "weight": j_ei * self._params["jplus"][0, 1],
+                "delay": self._params["delay"],
+            },
+        )
+        nest.CopyModel(
+            "static_synapse",
+            "EI_minus",
+            {"weight": j_ei * jminus[0, 1], "delay": self._params["delay"]},
+        )
+        if self._params["fixed_indegree"]:
+            K_EI = int(self._params["baseline_conn_prob"][0, 1] * self._params["N_I"] / self._params["n_clusters"])
+            print("K_EI: ", K_EI)
+            conn_params_EI = {
+                "rule": "fixed_indegree",
+                "indegree": K_EI,
+                "allow_autapses": False,
+                "allow_multapses": False,
+            }
+        else:
+            conn_params_EI = {
+                "rule": "pairwise_bernoulli",
+                "p": self._params["baseline_conn_prob"][0, 1],
+                "allow_autapses": False,
+                "allow_multapses": False,
+            }
+        for i, pre in enumerate(self._populations[1]):
+            for j, post in enumerate(self._populations[0]):
+                if i == j:
+                    # same cluster
+                    nest.Connect(pre, post, conn_params_EI, "EI_plus")
+                else:
+                    nest.Connect(pre, post, conn_params_EI, "EI_minus")
 
-                Returns
-                -------
-                spiketimes: ndarray
-                    2D array [2xN_Spikes]
-                    of spiketimes with spiketimes in row 0 and neuron IDs in row 1.
-                """
-                events = nest.GetStatus(self._recording_devices[0], "events")[0]
-                # convert them to the format accepted by spiketools
-                spiketimes = np.append(events["times"][None, :], events["senders"][None, :], axis=0)
-                spiketimes[1] -= 1
-                # remove the pre warmup spikes
-                spiketimes = spiketimes[:, spiketimes[0] >= self._params["warmup"]]
-                spiketimes[0] -= self._params["warmup"]
-                return spiketimes
+        # Excitatory to inhibitory neuron connections
+        j_ie = js[1, 0] / np.sqrt(N)
+        nest.CopyModel(
+            "static_synapse",
+            "IE_plus",
+            {
+                "weight": j_ie * self._params["jplus"][1, 0],
+                "delay": self._params["delay"],
+            },
+        )
+        nest.CopyModel(
+            "static_synapse",
+            "IE_minus",
+            {"weight": j_ie * jminus[1, 0], "delay": self._params["delay"]},
+        )
 
-            def get_parameter(self):
-                """Get all parameters used to create the network.
-                Returns
-                -------
-                dict
-                    Dictionary with all parameters of the network and the simulation.
-                """
-                return self._params
+        if self._params["fixed_indegree"]:
+            K_IE = int(self._params["baseline_conn_prob"][1, 0] * self._params["N_E"] / self._params["n_clusters"])
+            print("K_IE: ", K_IE)
+            conn_params_IE = {
+                "rule": "fixed_indegree",
+                "indegree": K_IE,
+                "allow_autapses": False,
+                "allow_multapses": False,
+            }
+        else:
+            conn_params_IE = {
+                "rule": "pairwise_bernoulli",
+                "p": self._params["baseline_conn_prob"][1, 0],
+                "allow_autapses": False,
+                "allow_multapses": False,
+            }
+        for i, pre in enumerate(self._populations[0]):
+            for j, post in enumerate(self._populations[1]):
+                if i == j:
+                    # same cluster
+                    nest.Connect(pre, post, conn_params_IE, "IE_plus")
+                else:
+                    nest.Connect(pre, post, conn_params_IE, "IE_minus")
 
-            def create_and_simulate(self):
-                """Create and simulate the EI-clustered network.
+        # Inhibitory to inhibitory neuron connections
+        j_ii = js[1, 1] / np.sqrt(N)
+        nest.CopyModel(
+            "static_synapse",
+            "II_plus",
+            {
+                "weight": j_ii * self._params["jplus"][1, 1],
+                "delay": self._params["delay"],
+            },
+        )
+        nest.CopyModel(
+            "static_synapse",
+            "II_minus",
+            {"weight": j_ii * jminus[1, 1], "delay": self._params["delay"]},
+        )
+        if self._params["fixed_indegree"]:
+            K_II = int(self._params["baseline_conn_prob"][1, 1] * self._params["N_I"] / self._params["n_clusters"])
+            print("K_II: ", K_II)
+            conn_params_II = {
+                "rule": "fixed_indegree",
+                "indegree": K_II,
+                "allow_autapses": False,
+                "allow_multapses": False,
+            }
+        else:
+            conn_params_II = {
+                "rule": "pairwise_bernoulli",
+                "p": self._params["baseline_conn_prob"][1, 1],
+                "allow_autapses": False,
+                "allow_multapses": False,
+            }
+        for i, pre in enumerate(self._populations[1]):
+            for j, post in enumerate(self._populations[1]):
+                if i == j:
+                    # same cluster
+                    nest.Connect(pre, post, conn_params_II, "II_plus")
+                else:
+                    nest.Connect(pre, post, conn_params_II, "II_minus")
 
-                Returns
-                -------
-                spiketimes: ndarray
-                    2D array [2xN_Spikes]
-                    of spiketimes with spiketimes in row 0 and neuron IDs in row 1.
-                """
-                self.setup_network()
-                self.simulate()
-                return self.get_recordings()
+        # Connect thalamic population to excitatory population
+        conn_params_thalamic_to_excitatory = {
+            "rule": "fixed_indegree",
+            "indegree": 800,  # Adjust desired connectivity
+            "weight": 0.2,  # Adjust desired connectivity
+            "delay": 0.1,
+        }
+        for pre in self._populations[2]:
+            for post in self._populations[0]:
+                nest.Connect(pre, post, conn_params_thalamic_to_excitatory)
 
-            def get_firing_rates(self, spiketimes=None):
-                """Calculates the average firing rates of
-                all excitatory and inhibitory neurons.
+        # Connect thalamic population to inhibitory population
+        conn_params_thalamic_to_inhibitory = {
+            "rule": "fixed_indegree",
+            "indegree": 200,  # Adjust desired connectivity
+            "weight": 0.5,  # Adjust desired connectivity
+            "delay": 0.1,
+        }
+        for pre in self._populations[2]:
+            for post in self._populations[1]:
+                nest.Connect(pre, post, conn_params_thalamic_to_inhibitory)
 
-                Calculates the firing rates of all excitatory neurons
-                and the firing rates of all inhibitory neurons
-                created by self.create_populations.
-                If spiketimes are not supplied, they get extracted.
+        # Connect thalamic population to itself
+        conn_params_thalamic_self = {
+            "rule": "fixed_indegree",
+            "indegree": 500,  # Adjust desired connectivity
+            "weight": 0.4,  # Adjust desired connectivity
+            "delay": 0.1,
+        }
+        for pre in self._populations[2]:
+            for post in self._populations[2]:
+                nest.Connect(pre, post, conn_params_thalamic_self)
 
-                Parameters
-                ----------
-                spiketimes: ndarray
-                    2D array [2xN_Spikes] of spiketimes
-                    with spiketimes in row 0 and neuron IDs in row 1.
+    def create_stimulation(self):
+        """Create a current source and connect it to clusters."""
+        if self._params["stim_clusters"] is not None:
+            stim_amp = self._params["stim_amp"]  # amplitude of the stimulation current in pA
+            stim_starts = self._params["stim_starts"]  # list of stimulation start times
+            stim_ends = self._params["stim_ends"]  # list of stimulation end times
+            amplitude_values = []
+            amplitude_times = []
+            for start, end in zip(stim_starts, stim_ends):
+                amplitude_times.append(start + self._params["warmup"])
+                amplitude_values.append(stim_amp)
+                amplitude_times.append(end + self._params["warmup"])
+                amplitude_values.append(0.0)
+            self._currentsources = [nest.Create("step_current_generator")]
+            for stim_cluster in self._params["stim_clusters"]:
+                nest.Connect(self._currentsources[0], self._populations[0][stim_cluster])
+            nest.SetStatus(
+                self._currentsources[0],
+                {
+                    "amplitude_times": amplitude_times,
+                    "amplitude_values": amplitude_values,
+                },
+            )
 
-                Returns
-                -------
-                tuple[float, float]
-                    average firing rates of excitatory (0)
-                    and inhibitory (1) neurons (spikes/s)
-                """
-                if spiketimes is None:
-                    spiketimes = self.get_recordings()
-                e_count = spiketimes[:, spiketimes[1] < self._params["N_E"]].shape[1]
-                i_count = spiketimes[:, spiketimes[1] >= self._params["N_E"]].shape[1]
-                e_rate = e_count / float(self._params["N_E"]) / float(self._params["simtime"]) * 1000.0
-                i_rate = i_count / float(self._params["N_I"]) / float(self._params["simtime"]) * 1000.0
-                return e_rate, i_rate
+    def create_recording_devices(self):
+        """Creates a spike recorder
 
-            def set_I_x(self, I_XE, I_XI):
-                """Set DC currents for excitatory and inhibitory neurons
-                Adds DC currents for the excitatory and inhibitory neurons.
-                The DC currents are added to the currents already
-                present in the populations.
+        Create and connect a spike recorder to all neuron populations
+        in self._populations, including the thalamic population.
+        """
+        self._recording_devices = [nest.Create("spike_recorder")]
+        self._recording_devices[0].record_to = "memory"
 
-                Parameters
-                ----------
-                I_XE: float
-                    extra DC current for excitatory neurons [pA]
-                I_XI: float
-                    extra DC current for inhibitory neurons [pA]
-                """
-                for E_pop in self._populations[0]:
-                    I_e_loc = nest.GetStatus(E_pop, "I_e")
-                    nest.SetStatus(E_pop, {"I_e": I_e_loc + I_XE})
-                for I_pop in self._populations[1]:
-                    I_e_loc = nest.GetStatus(I_pop, "I_e")
-                    nest.SetStatus(I_pop, {"I_e": I_e_loc + I_XI})
+        all_units = self._populations[0][0]
+        for E_pop in self._populations[0][1:]:
+            all_units += E_pop
+        for I_pop in self._populations[1]:
+            all_units += I_pop
+        for thalamic_pop in self._populations[2]:
+            all_units += thalamic_pop  # Adding thalamic population to the recording
 
-            def get_simulation(self, PathSpikes=None):
-                """Create network, simulate and return results
+        nest.Connect(all_units, self._recording_devices[0], "all_to_all")  # Spikerecorder
 
-                Creates the EI-clustered network and simulates it with
-                the parameters supplied in the object creation.
-                Returns a dictionary with firing rates,
-                timing information (dict) and parameters (dict).
-                If PathSpikes is supplied the spikes get saved to a pickle file.
+    def set_model_build_pipeline(self, pipeline):
+        """Set _model_build_pipeline
 
-                Parameters
-                ----------
-                PathSpikes: str (optional)
-                    Path of file for spiketimes, if None, no file is saved
+        Parameters
+        ----------
+        pipeline: list
+            ordered list of functions executed to build the network model
+        """
+        self._model_build_pipeline = pipeline
 
-                Returns
-                -------
-                dict
-                 Dictionary with firing rates,
-                 spiketimes (ndarray) and parameters (dict)
-                """
+    def setup_network(self):
+        """Setup network in NEST
 
-                self.setup_network()
-                self.simulate()
-                spiketimes = self.get_recordings()
-                e_rate, i_rate = self.get_firing_rates(spiketimes)
+        Initializes NEST and creates
+        the network in NEST, ready to be simulated.
+        Functions saved in _model_build_pipeline are executed.
+        """
+        for func in self._model_build_pipeline:
+            func()
 
-                if PathSpikes is not None:
-                    with open(PathSpikes, "wb") as outfile:
-                        pickle.dump(spiketimes, outfile)
-                return {
-                    "e_rate": e_rate,
-                    "i_rate": i_rate,
-                    "_params": self.get_parameter(),
-                    "spiketimes": spiketimes,
-                }
+    def simulate(self):
+        """Simulates network for a period of warmup+simtime"""
+        nest.Simulate(self._params["warmup"] + self._params["simtime"])
 
-            def run_simulation(self):
-                """Run the NEST simulation."""
-                nest.Simulate(self._sim_params["warmup"])
-                nest.Simulate(self._sim_params["simtime"])
+    def get_recordings(self):
+        """Extract spikes from Spikerecorder
 
-            def get_results(self):
-                """Get the results from the simulation.
+        Extract spikes from the Spikerecorder connected
+        to all populations created in create_populations, including the thalamic population.
+        Cuts the warmup period away and sets time relative to end of warmup.
+        Ids 1:N_E correspond to excitatory neurons,
+        N_E+1:N_E+N_I correspond to inhibitory neurons.
 
-                Returns
-                -------
-                dict
-                    Dictionary containing the results of the simulation.
-                """
-                spike_times = nest.GetStatus(self._recorders[0], "events")[0]["times"]
-                spike_senders = nest.GetStatus(self._recorders[0], "events")[0]["senders"]
+        Returns
+        -------
+        spiketimes: ndarray
+            2D array [2xN_Spikes]
+            of spiketimes with spiketimes in row 0 and neuron IDs in row 1.
+        """
+        events = nest.GetStatus(self._recording_devices[0], "events")[0]
+        # convert them to the format accepted by spiketools
+        spiketimes = np.append(events["times"][None, :], events["senders"][None, :], axis=0)
+        spiketimes[1] -= 1
+        # remove the pre-warmup spikes
+        spiketimes = spiketimes[:, spiketimes[0] >= self._params["warmup"]]
+        spiketimes[0] -= self._params["warmup"]
+        return spiketimes
 
-                return {"spike_times": spike_times, "spike_senders": spike_senders}
+    def get_parameter(self):
+        """Get all parameters used to create the network.
+        Returns
+        -------
+        dict
+            Dictionary with all parameters of the network and the simulation.
+        """
+        return self._params
+
+    def create_and_simulate(self):
+        """Create and simulate the EI-clustered network.
+
+        Returns
+        -------
+        spiketimes: ndarray
+            2D array [2xN_Spikes]
+            of spiketimes with spiketimes in row 0 and neuron IDs in row 1.
+        """
+        self.setup_network()
+        self.simulate()
+        return self.get_recordings()
+
+    def get_firing_rates(self, spiketimes=None):
+        """Calculates the average firing rates of
+        all excitatory and inhibitory neurons, including the thalamic population.
+
+        Calculates the firing rates of all excitatory neurons,
+        the firing rates of all inhibitory neurons, and
+        the firing rates of the thalamic population
+        created by self.create_populations.
+        If spiketimes are not supplied, they get extracted.
+
+        Parameters
+        ----------
+        spiketimes: ndarray
+            2D array [2xN_Spikes] of spiketimes
+            with spiketimes in row 0 and neuron IDs in row 1.
+
+        Returns
+        -------
+        tuple[float, float, float]
+            average firing rates of excitatory (0),
+            inhibitory (1), and thalamic (2) neurons (spikes/s)
+        """
+        if spiketimes is None:
+            spiketimes = self.get_recordings()
+        e_count = spiketimes[:, spiketimes[1] < self._params["N_E"]].shape[1]
+        i_count = spiketimes[:, (spiketimes[1] >= self._params["N_E"]) & (
+                    spiketimes[1] < self._params["N_E"] + self._params["N_I"])].shape[1]
+        t_count = spiketimes[:, spiketimes[1] >= self._params["N_E"] + self._params["N_I"]].shape[1]
+        e_rate = e_count / float(self._params["N_E"]) / float(self._params["simtime"]) * 1000.0
+        i_rate = i_count / float(self._params["N_I"]) / float(self._params["simtime"]) * 1000.0
+        t_rate = t_count / float(self._params["N_Th"]) / float(self._params["simtime"]) * 1000.0
+        return e_rate, i_rate, t_rate
+
+    def set_I_x(self, I_XE, I_XI, I_XT):
+        """Set DC currents for excitatory, inhibitory, and thalamic neurons
+        Adds DC currents for the excitatory, inhibitory, and thalamic neurons.
+        The DC currents are added to the currents already present in the populations.
+
+        Parameters
+        ----------
+        I_XE: float
+            extra DC current for excitatory neurons [pA]
+        I_XI: float
+            extra DC current for inhibitory neurons [pA]
+        I_XT: float
+            extra DC current for thalamic neurons [pA]
+        """
+        for E_pop in self._populations[0]:
+            I_e_loc = E_pop.get("I_e")
+            E_pop.set({"I_e": I_e_loc + I_XE})
+        for I_pop in self._populations[1]:
+            I_e_loc = I_pop.get("I_e")
+            I_pop.set({"I_e": I_e_loc + I_XI})
+        for T_pop in self._populations[2]:  # Assuming thalamic population is at index 2
+            I_e_loc = T_pop.get("I_e")
+            T_pop.set({"I_e": I_e_loc + I_XT})
+
+    def get_simulation(self, PathSpikes=None):
+        """Create network, simulate and return results
+
+        Creates the EI-clustered network and simulates it with
+        the parameters supplied in the object creation.
+        Returns a dictionary with firing rates,
+        timing information (dict) and parameters (dict).
+        If PathSpikes is supplied the spikes get saved to a pickle file.
+
+        Parameters
+        ----------
+        PathSpikes: str (optional)
+            Path of file for spiketimes, if None, no file is saved
+
+        Returns
+        -------
+        dict
+         Dictionary with firing rates,
+         spiketimes (ndarray) and parameters (dict)
+        """
+
+        self.setup_network()
+        self.simulate()
+        spiketimes = self.get_recordings()  # Include thalamic population in recordings
+        e_rate, i_rate = self.get_firing_rates(spiketimes)
+
+        if PathSpikes is not None:
+            with open(PathSpikes, "wb") as outfile:
+                pickle.dump(spiketimes, outfile)
+        return {
+            "e_rate": e_rate,
+            "i_rate": i_rate,
+            "_params": self.get_parameter(),
+            "spiketimes": spiketimes
+        }
 
 
