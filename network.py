@@ -204,32 +204,13 @@ class ClusteredNetwork:
         Creates the third population and connects it to the
         excitatory and inhibitory populations.
         """
-        # Create parameters for the thalamic population
-        thalamic_neuron_params = {
-            "neuron_type": "iaf_psc_exp",
-            "E_L": 0.0,
-            "C_m": 1.0,
-            "tau_E": 20.0,
-            "tau_I": 10.0,
-            "t_ref": 5.0,
-            "V_th_E": 20.0,
-            "V_th_I": 20.0,
-            "V_r": 0.0,
-            "tau_syn_ex": 5.0,
-            "tau_syn_in": 5.0,
-            "delay": 0.1,
-            "I_th_E": 1.25,
-            "I_th_I": 0.78,
-            "delta_I_xE": 0.0,
-            "delta_I_xI": 0.0,
-            "V_m": "rand",
-        }
+        thalamic_pop_size = self._params["thalamic_pop_size"]
+        thalamic_neuron_params = self._params["thalamic_neuron_params"].copy()  # Make a copy to avoid modifying the original
 
-        # Calculate size of the thalamic population
-        thalamic_pop_size = 500  # Adjust population size
+        neuron_type = thalamic_neuron_params.pop("neuron_type")  # Extract the neuron type and remove it from the params
 
-        # Create the thalamic population
-        thalamic_pop = nest.Create(self._params["neuron_type"], n=thalamic_pop_size, params=thalamic_neuron_params)
+        thalamic_pop = nest.Create(neuron_type, n=thalamic_pop_size, params=thalamic_neuron_params)
+
 
         # Append thalamic population to list of populations
         self._populations.append(thalamic_pop)
@@ -253,11 +234,13 @@ class ClusteredNetwork:
 
             # Connect thalamic population to excitatory population
             conn_params_thalamic_to_excitatory = {
-                "rule": "fixed_indegree",
-                "indegree": 800,  # Adjust desired connectivity
-                "weight": 0.2,  # Adjust desired connectivity
+                "rule": "fixed_indegree",  # example rule, adjust as needed
+                "indegree": 10,  # example indegree, adjust as needed
+                "weight": 2.0,  # synaptic weight
+                "delay": 1.5,  # synaptic delay
                 "delay": 0.1,
             }
+
             for pre in self._populations[2]:
                 for post in self._populations[0]:
                     nest.Connect(pre, post, conn_params_thalamic_to_excitatory)
@@ -272,6 +255,10 @@ class ClusteredNetwork:
             for pre in self._populations[2]:
                 for post in self._populations[1]:
                     nest.Connect(pre, post, conn_params_thalamic_to_inhibitory)
+
+            # Assume `pre` and `post` are the pre- and post-synaptic neuron collections
+            pre = self.thalamic_population  # replace with actual thalamic population
+            post = self.excitatory_population  # replace with actual excitatory population
 
     def connect_probabilities(self):
         """Connect the clusters with a probability EI-cluster scheme
@@ -546,13 +533,9 @@ class ClusteredNetwork:
         so that the total input to a neuron is balanced.
         """
 
-        #  self._populations[0] -> Excitatory population
-        #  self._populations[1] -> Inhibitory population
-
         N = self._params["N_E"] + self._params["N_I"]  # total units
 
         # if js are not given compute them so that sqrt(K) spikes equal v_thr-E_L and rows are balanced
-        # if any of the js is nan or not given
         if self._params.get("js") is None or np.isnan(self._params.get("js")).any():
             js = helper.calculate_RBN_weights(self._params)
         js *= self._params["s"]
@@ -583,14 +566,12 @@ class ClusteredNetwork:
         )
         if self._params["fixed_indegree"]:
             K_EE = int(self._params["baseline_conn_prob"][0, 0] * self._params["N_E"] / self._params["n_clusters"])
-            print("K_EE: ", K_EE)
             conn_params_EE = {
                 "rule": "fixed_indegree",
                 "indegree": K_EE,
                 "allow_autapses": False,
                 "allow_multapses": False,
             }
-
         else:
             conn_params_EE = {
                 "rule": "pairwise_bernoulli",
@@ -601,7 +582,6 @@ class ClusteredNetwork:
         for i, pre in enumerate(self._populations[0]):
             for j, post in enumerate(self._populations[0]):
                 if i == j:
-                    # same cluster
                     nest.Connect(pre, post, conn_params_EE, "EE_plus")
                 else:
                     nest.Connect(pre, post, conn_params_EE, "EE_minus")
@@ -623,7 +603,6 @@ class ClusteredNetwork:
         )
         if self._params["fixed_indegree"]:
             K_EI = int(self._params["baseline_conn_prob"][0, 1] * self._params["N_I"] / self._params["n_clusters"])
-            print("K_EI: ", K_EI)
             conn_params_EI = {
                 "rule": "fixed_indegree",
                 "indegree": K_EI,
@@ -640,7 +619,6 @@ class ClusteredNetwork:
         for i, pre in enumerate(self._populations[1]):
             for j, post in enumerate(self._populations[0]):
                 if i == j:
-                    # same cluster
                     nest.Connect(pre, post, conn_params_EI, "EI_plus")
                 else:
                     nest.Connect(pre, post, conn_params_EI, "EI_minus")
@@ -660,10 +638,8 @@ class ClusteredNetwork:
             "IE_minus",
             {"weight": j_ie * jminus[1, 0], "delay": self._params["delay"]},
         )
-
         if self._params["fixed_indegree"]:
             K_IE = int(self._params["baseline_conn_prob"][1, 0] * self._params["N_E"] / self._params["n_clusters"])
-            print("K_IE: ", K_IE)
             conn_params_IE = {
                 "rule": "fixed_indegree",
                 "indegree": K_IE,
@@ -680,7 +656,6 @@ class ClusteredNetwork:
         for i, pre in enumerate(self._populations[0]):
             for j, post in enumerate(self._populations[1]):
                 if i == j:
-                    # same cluster
                     nest.Connect(pre, post, conn_params_IE, "IE_plus")
                 else:
                     nest.Connect(pre, post, conn_params_IE, "IE_minus")
@@ -702,7 +677,6 @@ class ClusteredNetwork:
         )
         if self._params["fixed_indegree"]:
             K_II = int(self._params["baseline_conn_prob"][1, 1] * self._params["N_I"] / self._params["n_clusters"])
-            print("K_II: ", K_II)
             conn_params_II = {
                 "rule": "fixed_indegree",
                 "indegree": K_II,
@@ -719,7 +693,6 @@ class ClusteredNetwork:
         for i, pre in enumerate(self._populations[1]):
             for j, post in enumerate(self._populations[1]):
                 if i == j:
-                    # same cluster
                     nest.Connect(pre, post, conn_params_II, "II_plus")
                 else:
                     nest.Connect(pre, post, conn_params_II, "II_minus")
@@ -727,35 +700,41 @@ class ClusteredNetwork:
         # Connect thalamic population to excitatory population
         conn_params_thalamic_to_excitatory = {
             "rule": "fixed_indegree",
-            "indegree": 800,  # Adjust desired connectivity
-            "weight": 0.2,  # Adjust desired connectivity
-            "delay": 0.1,
+            "indegree": 800  # Adjust desired connectivity
+        }
+        syn_spec_thalamic_to_excitatory = {
+            "weight": 0.2,  # Adjust desired weight
+            "delay": 0.1  # Adjust desired delay
         }
         for pre in self._populations[2]:
             for post in self._populations[0]:
-                nest.Connect(pre, post, conn_params_thalamic_to_excitatory)
+                nest.Connect(pre, post, conn_params_thalamic_to_excitatory, syn_spec_thalamic_to_excitatory)
 
         # Connect thalamic population to inhibitory population
         conn_params_thalamic_to_inhibitory = {
             "rule": "fixed_indegree",
-            "indegree": 200,  # Adjust desired connectivity
-            "weight": 0.5,  # Adjust desired connectivity
-            "delay": 0.1,
+            "indegree": 200  # Adjust desired connectivity
+        }
+        syn_spec_thalamic_to_inhibitory = {
+            "weight": 0.5,  # Adjust desired weight
+            "delay": 0.1  # Adjust desired delay
         }
         for pre in self._populations[2]:
             for post in self._populations[1]:
-                nest.Connect(pre, post, conn_params_thalamic_to_inhibitory)
+                nest.Connect(pre, post, conn_params_thalamic_to_inhibitory, syn_spec_thalamic_to_inhibitory)
 
         # Connect thalamic population to itself
         conn_params_thalamic_self = {
             "rule": "fixed_indegree",
-            "indegree": 500,  # Adjust desired connectivity
-            "weight": 0.4,  # Adjust desired connectivity
-            "delay": 0.1,
+            "indegree": 500  # Adjust desired connectivity
+        }
+        syn_spec_thalamic_self = {
+            "weight": 0.4,  # Adjust desired weight
+            "delay": 0.1  # Adjust desired delay
         }
         for pre in self._populations[2]:
             for post in self._populations[2]:
-                nest.Connect(pre, post, conn_params_thalamic_self)
+                nest.Connect(pre, post, conn_params_thalamic_self, syn_spec_thalamic_self)
 
     def create_stimulation(self):
         """Create a current source and connect it to clusters."""
