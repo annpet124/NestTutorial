@@ -34,7 +34,7 @@ import numpy as np
 
 
 class ClusteredNetwork:
-    """EI-clustered network objeect to build and simulate the network.
+    """EI-clustered network object to build and simulate the network.
 
     Provides functions to create neuron populations,
     stimulation devices and recording devices for an
@@ -195,9 +195,6 @@ class ClusteredNetwork:
 
         self._populations = [E_pops, I_pops]
 
-        # Add thalamic population
-        self.add_thalamic_input()
-
     def add_thalamic_input(self):
         """Add thalamic input to the network.
 
@@ -205,15 +202,65 @@ class ClusteredNetwork:
         excitatory and inhibitory populations.
         """
         thalamic_pop_size = self._params["thalamic_pop_size"]
-        thalamic_neuron_params = self._params["thalamic_neuron_params"].copy()  # Make a copy to avoid modifying the original
+        thalamic_neuron_params = self._params[
+            "thalamic_neuron_params"].copy()  # Make a copy to avoid modifying the original
 
-        neuron_type = thalamic_neuron_params.pop("neuron_type")  # Extract the neuron type and remove it from the params
+        neuron_type = 'iaf_psc_alpha'  # specify the neuron model type
 
+        # Ensure `neuron_type` is not included in `thalamic_neuron_params`
+        if 'neuron_type' in thalamic_neuron_params:
+            del thalamic_neuron_params['neuron_type']
+
+        # Create thalamic population using neuron type and parameters
         thalamic_pop = nest.Create(neuron_type, n=thalamic_pop_size, params=thalamic_neuron_params)
 
+        # Create an inhomogeneous Poisson generator with a given rate profile
+        delay = 0.2  # Adjust the delay value as needed
+        rate_times = [i * 1.0 + delay for i in range(thalamic_pop_size)]  # Generate strictly increasing rate times
+        rate_values = [20.0] * thalamic_pop_size  # preliminary rate profile, 20 Hz for each neuron
+        poisson_gen = nest.Create('inhomogeneous_poisson_generator', params={"rate_times": rate_times, "rate_values": rate_values})
+
+        # Connect the Poisson generator to the thalamic population
+        syn_spec = {"weight": 0.2, "delay": self._params["delay"]}  # synaptic parameters
+        for neuron in thalamic_pop:
+            nest.Connect(poisson_gen, neuron, syn_spec=syn_spec)
 
         # Append thalamic population to list of populations
         self._populations.append(thalamic_pop)
+
+        # Connect thalamic population to excitatory population
+        conn_params_thalamic_to_excitatory = {
+            "rule": "fixed_indegree",  # example rule, adjust as needed
+            "indegree": 10,  # example indegree, adjust as needed
+            # "weight": 2.0,  # synaptic weight
+            # "delay": 0.1,  # synaptic delay
+        }
+
+        nest.CopyModel("stdp_synapse", "TE", {"weight": 0.2, "delay": self._params["delay"]})
+
+        nest.Connect(list(thalamic_pop), list(self._populations[0]), conn_spec=conn_params_thalamic_to_excitatory,
+                     syn_spec="TE")
+
+        # Connect thalamic population to inhibitory population
+        conn_params_thalamic_to_inhibitory = {
+            "rule": "fixed_indegree",
+            "indegree": 10,  # Adjust desired connectivity
+            #    "weight": 0.5,  # Adjust desired connectivity
+            #    "delay": 0.1,
+        }
+
+        nest.CopyModel("stdp_synapse", "TI", {"weight": 0.2, "delay": self._params["delay"]})
+
+        nest.Connect(list(thalamic_pop), list(self._populations[1]), conn_spec=conn_params_thalamic_to_inhibitory,
+                     syn_spec="TI")
+
+        # Assume `pre` and `post` are the pre- and post-synaptic neuron collections
+
+        all_units = self._populations[-1][0]
+        for thalamic_pop in self._populations[2][1:]:
+            all_units += thalamic_pop  # Adding thalamic population to the recording
+
+        nest.Connect(all_units, self._recording_devices[0], "all_to_all")  # Spikerecorder
 
     def connect(self):
             """Connect the excitatory, inhibitory, and thalamic populations
@@ -232,33 +279,6 @@ class ClusteredNetwork:
             else:
                 raise ValueError("Clustering method %s not implemented" % self._params["clustering"])
 
-            # Connect thalamic population to excitatory population
-            conn_params_thalamic_to_excitatory = {
-                "rule": "fixed_indegree",  # example rule, adjust as needed
-                "indegree": 10,  # example indegree, adjust as needed
-                "weight": 2.0,  # synaptic weight
-                "delay": 1.5,  # synaptic delay
-                "delay": 0.1,
-            }
-
-            for pre in self._populations[2]:
-                for post in self._populations[0]:
-                    nest.Connect(pre, post, conn_params_thalamic_to_excitatory)
-
-            # Connect thalamic population to inhibitory population
-            conn_params_thalamic_to_inhibitory = {
-                "rule": "fixed_indegree",
-                "indegree": 200,  # Adjust desired connectivity
-                "weight": 0.5,  # Adjust desired connectivity
-                "delay": 0.1,
-            }
-            for pre in self._populations[2]:
-                for post in self._populations[1]:
-                    nest.Connect(pre, post, conn_params_thalamic_to_inhibitory)
-
-            # Assume `pre` and `post` are the pre- and post-synaptic neuron collections
-            pre = self.thalamic_population  # replace with actual thalamic population
-            post = self.excitatory_population  # replace with actual excitatory population
 
     def connect_probabilities(self):
         """Connect the clusters with a probability EI-cluster scheme
@@ -488,6 +508,7 @@ class ClusteredNetwork:
                 else:
                     nest.Connect(pre, post, conn_params_II_minus, "II")
 
+        '''
         # Thalamic population to excitatory population
         conn_params_thalamic_to_excitatory = {
             "rule": "fixed_indegree",
@@ -522,6 +543,7 @@ class ClusteredNetwork:
         for pre in self._populations[2]:
             for post in self._populations[2]:
                 nest.Connect(pre, post, conn_params_thalamic_self)
+                '''
 
     def connect_weight(self):
         """Connect the clusters with a weight EI-cluster scheme
@@ -697,44 +719,7 @@ class ClusteredNetwork:
                 else:
                     nest.Connect(pre, post, conn_params_II, "II_minus")
 
-        # Connect thalamic population to excitatory population
-        conn_params_thalamic_to_excitatory = {
-            "rule": "fixed_indegree",
-            "indegree": 800  # Adjust desired connectivity
-        }
-        syn_spec_thalamic_to_excitatory = {
-            "weight": 0.2,  # Adjust desired weight
-            "delay": 0.1  # Adjust desired delay
-        }
-        for pre in self._populations[2]:
-            for post in self._populations[0]:
-                nest.Connect(pre, post, conn_params_thalamic_to_excitatory, syn_spec_thalamic_to_excitatory)
 
-        # Connect thalamic population to inhibitory population
-        conn_params_thalamic_to_inhibitory = {
-            "rule": "fixed_indegree",
-            "indegree": 200  # Adjust desired connectivity
-        }
-        syn_spec_thalamic_to_inhibitory = {
-            "weight": 0.5,  # Adjust desired weight
-            "delay": 0.1  # Adjust desired delay
-        }
-        for pre in self._populations[2]:
-            for post in self._populations[1]:
-                nest.Connect(pre, post, conn_params_thalamic_to_inhibitory, syn_spec_thalamic_to_inhibitory)
-
-        # Connect thalamic population to itself
-        conn_params_thalamic_self = {
-            "rule": "fixed_indegree",
-            "indegree": 500  # Adjust desired connectivity
-        }
-        syn_spec_thalamic_self = {
-            "weight": 0.4,  # Adjust desired weight
-            "delay": 0.1  # Adjust desired delay
-        }
-        for pre in self._populations[2]:
-            for post in self._populations[2]:
-                nest.Connect(pre, post, conn_params_thalamic_self, syn_spec_thalamic_self)
 
     def create_stimulation(self):
         """Create a current source and connect it to clusters."""
@@ -774,8 +759,6 @@ class ClusteredNetwork:
             all_units += E_pop
         for I_pop in self._populations[1]:
             all_units += I_pop
-        for thalamic_pop in self._populations[2]:
-            all_units += thalamic_pop  # Adding thalamic population to the recording
 
         nest.Connect(all_units, self._recording_devices[0], "all_to_all")  # Spikerecorder
 
@@ -879,10 +862,10 @@ class ClusteredNetwork:
         t_count = spiketimes[:, spiketimes[1] >= self._params["N_E"] + self._params["N_I"]].shape[1]
         e_rate = e_count / float(self._params["N_E"]) / float(self._params["simtime"]) * 1000.0
         i_rate = i_count / float(self._params["N_I"]) / float(self._params["simtime"]) * 1000.0
-        t_rate = t_count / float(self._params["N_Th"]) / float(self._params["simtime"]) * 1000.0
+        t_rate = t_count / float(self._params["thalamic_pop_size"]) / float(self._params["simtime"]) * 1000.0
         return e_rate, i_rate, t_rate
 
-    def set_I_x(self, I_XE, I_XI, I_XT):
+    def set_I_x(self, I_XE, I_XI):#, I_XT):
         """Set DC currents for excitatory, inhibitory, and thalamic neurons
         Adds DC currents for the excitatory, inhibitory, and thalamic neurons.
         The DC currents are added to the currents already present in the populations.
@@ -902,9 +885,9 @@ class ClusteredNetwork:
         for I_pop in self._populations[1]:
             I_e_loc = I_pop.get("I_e")
             I_pop.set({"I_e": I_e_loc + I_XI})
-        for T_pop in self._populations[2]:  # Assuming thalamic population is at index 2
-            I_e_loc = T_pop.get("I_e")
-            T_pop.set({"I_e": I_e_loc + I_XT})
+        #for T_pop in self._populations[2]:  # Assuming thalamic population is at index 2
+        #    I_e_loc = T_pop.get("I_e")
+        #    T_pop.set({"I_e": I_e_loc + I_XT})
 
     def get_simulation(self, PathSpikes=None):
         """Create network, simulate and return results
@@ -930,7 +913,7 @@ class ClusteredNetwork:
         self.setup_network()
         self.simulate()
         spiketimes = self.get_recordings()  # Include thalamic population in recordings
-        e_rate, i_rate = self.get_firing_rates(spiketimes)
+        e_rate, i_rate, t_rate = self.get_firing_rates(spiketimes)
 
         if PathSpikes is not None:
             with open(PathSpikes, "wb") as outfile:
@@ -938,6 +921,7 @@ class ClusteredNetwork:
         return {
             "e_rate": e_rate,
             "i_rate": i_rate,
+            "t_rate": t_rate,
             "_params": self.get_parameter(),
             "spiketimes": spiketimes
         }
