@@ -45,9 +45,9 @@ net_dict = {
     # Refractory period [ms]
     "t_ref": 5.0,
     # Threshold for excitatory neurons [mV]
-    "V_th_E": 20.0,
+    "V_th_E": 2.5,
     # Threshold for inhibitory neurons [mV]
-    "V_th_I": 20.0,
+    "V_th_I": 2.0,
     # Reset potential [mV]
     "V_r": 0.0,
     # synaptic time constant for excitatory synapses [ms]
@@ -107,13 +107,14 @@ net_dict = {
     # thalamic neuron parameters
     "thalamic_neuron_params": {
         "neuron_type": "iaf_psc_exp",
-        "E_L": -65.0,  # Resting potential [mV]
-        "C_m": 250.0,  # Membrane capacitance [pF]
-        "tau_m": 10.0,  # Membrane time constant [ms]
+        "E_L": 0.0,  # Resting potential [mV]
+        "C_m": 1.0,  # Membrane capacitance [pF]
+        "tau_m": 20.0,  # Membrane time constant [ms]
         "t_ref": 2.0,  # Refractory period [ms]
-        "V_th": -50.0,  # Threshold potential [mV]
-        "V_reset": -65.0,  # Reset potential [mV]
-        "tau_syn_ex": 2.0,  # Excitatory synaptic time constant [ms]
-        "tau_syn_in": 5.0,  # Inhibitory synaptic time constant [ms]
+        "V_th": 10.0,  # Threshold potential [mV]
+        "V_reset": 0.0,  # Reset potential [mV]
+        "tau_syn_ex": 0.5,  # Excitatory synaptic time constant [ms]
+        "tau_syn_in": 1.0,  # Inhibitory synaptic time constant [ms]
+        "I_e": 0.01,
     }
 }
