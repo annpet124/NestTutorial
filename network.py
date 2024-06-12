@@ -214,16 +214,34 @@ class ClusteredNetwork:
         # Create thalamic population using neuron type and parameters
         thalamic_pop = nest.Create(neuron_type, n=thalamic_pop_size, params=thalamic_neuron_params)
 
-        # Create an inhomogeneous Poisson generator with a given rate profile
-        delay = 0.2  # Adjust the delay value as needed
-        rate_times = [i * 1.0 + delay for i in range(thalamic_pop_size)]  # Generate strictly increasing rate times
-        rate_values = [20.0] * thalamic_pop_size  # preliminary rate profile, 20 Hz for each neuron
-        poisson_gen = nest.Create('inhomogeneous_poisson_generator', params={"rate_times": rate_times, "rate_values": rate_values})
+        delay = 0.2  # Adjust delay value as needed
+        rate_times = []
+        rate_values = []
+
+        for i in range(thalamic_pop_size):
+            # Generate strictly increasing rate times for each neuron
+            times = np.array([1.0, 6.0, 8.5]) + i * delay
+            rate_times.append(times.tolist())
+            # Different Hz values for each neuron
+            values = [1.0, 4.0, 6.0]  # rate profile
+            rate_values.append(values)
+
+        # Create inhomogeneous poisson generators with specific rate times and rate values
+        poisson_gen = nest.Create('inhomogeneous_poisson_generator', thalamic_pop_size)
+
+        # Ensure that each generator is a NodeCollection and update its status
+        for i, pg in enumerate(poisson_gen):
+            times = rate_times[i]
+            values = rate_values[i]
+            if isinstance(pg, nest.NodeCollection):
+                nest.SetStatus(pg, {"rate_times": times, "rate_values": values})
+            else:
+                nest.SetStatus([pg], {"rate_times": times, "rate_values": values})
 
         # Connect the Poisson generator to the thalamic population
         syn_spec = {"weight": 0.2, "delay": self._params["delay"]}  # synaptic parameters
-        for neuron in thalamic_pop:
-            nest.Connect(poisson_gen, neuron, syn_spec=syn_spec)
+        #for neuron in thalamic_pop:
+        nest.Connect(poisson_gen, thalamic_pop, syn_spec=syn_spec)
 
         # Append thalamic population to list of populations
         self._populations.append(thalamic_pop)
@@ -238,8 +256,10 @@ class ClusteredNetwork:
 
         nest.CopyModel("stdp_synapse", "TE", {"weight": 0.2, "delay": self._params["delay"]})
 
-        nest.Connect(list(thalamic_pop), list(self._populations[0]), conn_spec=conn_params_thalamic_to_excitatory,
-                     syn_spec="TE")
+        all_units = self._populations[0][0]
+        for pop in self._populations[0][1:]:
+            all_units += pop
+        nest.Connect(thalamic_pop, all_units, conn_spec=conn_params_thalamic_to_excitatory, syn_spec="TE")
 
         # Connect thalamic population to inhibitory population
         conn_params_thalamic_to_inhibitory = {
@@ -251,8 +271,10 @@ class ClusteredNetwork:
 
         nest.CopyModel("stdp_synapse", "TI", {"weight": 0.2, "delay": self._params["delay"]})
 
-        nest.Connect(list(thalamic_pop), list(self._populations[1]), conn_spec=conn_params_thalamic_to_inhibitory,
-                     syn_spec="TI")
+        all_units = self._populations[1][0]
+        for pop in self._populations[1][1:]:
+            all_units += pop
+        nest.Connect(thalamic_pop, all_units, conn_spec=conn_params_thalamic_to_inhibitory, syn_spec="TI")
 
         # Assume `pre` and `post` are the pre- and post-synaptic neuron collections
 
@@ -925,5 +947,6 @@ class ClusteredNetwork:
             "_params": self.get_parameter(),
             "spiketimes": spiketimes
         }
+
 
 
