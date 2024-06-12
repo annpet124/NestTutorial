@@ -220,10 +220,10 @@ class ClusteredNetwork:
 
         for i in range(thalamic_pop_size):
             # Generate strictly increasing rate times for each neuron
-            times = np.array([1.0, 6.0, 8.5]) + i * delay
+            times = np.array([1.0, 5.0, 7.5]) + i * delay
             rate_times.append(times.tolist())
             # Different Hz values for each neuron
-            values = [1.0, 4.0, 6.0]  # rate profile
+            values = [1.0, 1.5, 2.5]  # rate profile
             rate_values.append(values)
 
         # Create inhomogeneous poisson generators with specific rate times and rate values
