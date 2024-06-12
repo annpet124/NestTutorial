@@ -44,7 +44,7 @@ if __name__ == "__main__":
         ei_network.create_stimulation,
         ei_network.create_recording_devices,
         ei_network.connect,
-        ei_network.add_thalamic_input
+        ei_network.add_thalamic_input,
     ])
 
     # Runs the simulation and returns the spiketimes
@@ -59,8 +59,12 @@ if __name__ == "__main__":
         colorgroups=[
             ("k", 0, net_dict["N_E"]),
             ("darkred", net_dict["N_E"], net_dict["N_E"] + net_dict["N_I"]),
+            ("b", net_dict["N_E"] + net_dict["N_I"], net_dict["N_E"] + net_dict["N_I"]+500),
         ],
     )
-    plt.savefig("clustered_ei_raster.png")
+    plt.ylim(0, 5500)
+    plt.show()
+    #plt.savefig("clustered_ei_raster.png")
     print(f"Firing rate of excitatory neurons: {result['e_rate']:6.2f} spikes/s")
     print(f"Firing rate of inhibitory neurons: {result['i_rate']:6.2f} spikes/s")
+    print(f"Firing rate of thalamic neurons: {result['t_rate']:6.2f} spikes/s")
